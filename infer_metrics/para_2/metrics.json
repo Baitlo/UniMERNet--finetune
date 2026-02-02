@@ -1,0 +1,32 @@
+{
+  "overall": {
+    "num_samples": 2239,
+    "bleu": 0.15557057400826732,
+    "edit_distance": 0.6890307344208467,
+    "num_missing_labels": 3,
+    "num_total_lines_in_pred": 2242
+  },
+  "by_category": {
+    "complex": {
+      "num_samples": 685,
+      "bleu": 0.1399431406392386,
+      "edit_distance": 0.7461670413009069,
+      "num_missing_labels": 1,
+      "num_total_lines_in_pred": 686
+    },
+    "easy": {
+      "num_samples": 792,
+      "bleu": 0.2100849964585058,
+      "edit_distance": 0.6410735795337216,
+      "num_missing_labels": 1,
+      "num_total_lines_in_pred": 793
+    },
+    "moderate": {
+      "num_samples": 762,
+      "bleu": 0.14314794435181408,
+      "edit_distance": 0.6875132757039997,
+      "num_missing_labels": 1,
+      "num_total_lines_in_pred": 763
+    }
+  }
+}

@@ -1,0 +1,101 @@
+# UniMERNet Training Configuration with Repeated Augmentation
+# 
+# This configuration demonstrates how to use aug_repeats and keep_original
+# for improved training with repeated augmentation strategy.
+
+model:
+  arch: unimernet
+  model_type: unimernet
+  tokenizer_name: nougat
+  tokenizer_config:
+    path: ./models/unimernet_base
+  model_config:
+    model_name: ./models/unimernet_base
+    max_seq_len: 1536
+
+  load_pretrained: False
+  load_finetuned: False
+
+
+datasets:
+
+  formula_rec_train:
+    sample_ratio: 1
+    vis_processor:
+      train:
+        name: "formula_image_train"
+        image_size:
+          - 192
+          - 672
+    text_processor:
+      train:
+        name: "blip_caption"
+        max_words: 1536
+
+    build_info:
+      # unimath_train
+      images: /home/ubuntu/bigdiskdata/baiweikang/ablation_1M_for_unimer/images
+      annotation: /home/ubuntu/bigdiskdata/baiweikang/ablation_1M_for_unimer/equations.txt
+
+run:
+  runner: runner_iter
+  task: unimernet_train
+  
+  # optimizer
+  lr_sched: "linear_warmup_cosine_lr"
+  init_lr: 1e-4          # 峰值学习率
+  min_lr: 1e-6           # 最终学习率
+  warmup_lr: 1e-6        # warmup起始学习率
+  weight_decay: 0.05
+  
+  # batch size
+  batch_size_train: 4    # 每GPU的batch size
+  batch_size_eval: 8
+  accum_grad_iters: 1    # 梯度累积步数
+  num_workers: 8
+  
+  # ========== Repeated Augmentation Settings ==========
+  # aug_repeats: 每个样本在一个epoch中重复采样的次数
+  #   - 0 或 1: 禁用重复增强 (默认行为)
+  #   - 2-4: 推荐值，每个样本会被采样多次，每次应用不同的随机增强
+  #   - 注意: 使用aug_repeats会增加每个epoch的有效样本数
+  #          effective_samples = original_samples * aug_repeats
+  aug_repeats: 4
+  
+  # keep_original: 是否在重复增强中保留一份原始图像（不做增强）
+  #   - False: 所有重复都应用随机增强 (默认)
+  #   - True: 第一份使用原始图像（仅归一化），其余使用增强
+  #           这有助于模型同时学习干净数据和增强数据的特征
+  keep_original: True
+  # ====================================================
+  
+  # training iterations (基于8卡计算)
+  # 数据集: 1,000,000 样本
+  # 使用 aug_repeats=3 时，每个epoch的有效样本数 = 1,000,000 * 3 = 3,000,000
+  # effective_batch = batch_size_train * world_size = 4 * 8 = 32
+  # 1 epoch (without aug_repeats) = 1,000,000 / 32 = 31,250 iters
+  # 1 epoch (with aug_repeats=3) = 3,000,000 / 32 = 93,750 iters
+  warmup_steps: 12500     # 约10%的1个epoch (with aug_repeats)
+  iters_per_inner_epoch: 125000   # 每个epoch的iteration数 (with aug_repeats)
+  max_iters: 375000      # 3个epochs (with aug_repeats)
+  milestone: [1, 2, 3]   # 在第1、2、3个epoch结束时额外保存checkpoint
+
+  seed: 42
+  
+  output_dir: "/home/ubuntu/baiweikang/diskdata/Models/UniMERNet/weights_aug_repeats"
+
+  amp: True
+  resume_ckpt_path: null
+
+  evaluate: False
+  train_splits: [ "train" ]
+  valid_splits: []       # 设为空列表，完全禁用eval
+
+  device: "cuda"
+  world_size: 1
+  dist_url: "env://"
+  distributed: True
+  distributed_type: ddp
+
+  generate_cfg:
+    temperature: 0.0

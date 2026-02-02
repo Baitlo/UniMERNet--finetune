@@ -1,0 +1,63 @@
+# Configuration for DDP inference on CMER_BENCH
+# 
+# Usage:
+#   Single GPU:
+#     python infer_ddp.py --cfg-path configs/infer_ddp.yaml --output infer_results.jsonl
+#
+#   Multi-GPU DDP (8 GPUs):
+#     torchrun --nproc_per_node=8 infer_ddp.py --cfg-path configs/infer_ddp.yaml --output infer_results.jsonl
+#
+# To use your custom trained weights, set load_finetuned=True and modify 'finetuned' path
+
+model:
+  arch: unimernet
+  model_type: unimernet
+  model_config:
+    model_name: ./models/unimernet_base
+    max_seq_len: 1536
+
+  # Option 1: Load pretrained base model only (set load_finetuned to False)
+  # Option 2: Load your finetuned checkpoint (set load_finetuned to True and provide path)
+  
+  load_pretrained: False
+  pretrained: './models/unimernet_base/unimernet_base.pth'
+  
+  load_finetuned: True
+  # Path to your trained checkpoint - UPDATE THIS PATH
+  # Example: /home/ubuntu/baiweikang/diskdata/Models/UniMERNet/weights_1/20260124095/result/checkpoint_best.pth
+  finetuned: '/home/ubuntu/baiweikang/diskdata/Models/UniMERNet/weights_1/checkpoint_best.pth'
+  
+  tokenizer_config:
+    path: ./models/unimernet_base
+
+datasets:
+  formula_rec_eval:
+    vis_processor:
+      eval:
+        name: "formula_image_eval"
+        image_size:
+          - 192
+          - 672
+
+run:
+  runner: runner_iter
+  task: unimernet_train
+
+  batch_size_train: 64
+  batch_size_eval: 64
+  num_workers: 8
+
+  seed: 42
+  output_dir: "./output/infer_ddp"
+
+  evaluate: True
+  test_splits: ["eval"]
+
+  device: "cuda"
+  world_size: 1
+  dist_url: "env://"
+  distributed: True
+  distributed_type: ddp
+
+  generate_cfg:
+    temperature: 0.0
