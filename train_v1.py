@@ -2,7 +2,6 @@ import argparse
 import logging
 import os
 import random
-from math import ceil
 
 import numpy as np
 import torch
@@ -18,6 +17,7 @@ from unimernet.common.registry import registry
 from unimernet.common.utils import now
 from unimernet.common.optims import LinearWarmupCosineLRScheduler, LinearWarmupStepLRScheduler
 from unimernet.datasets.data_utils import concat_datasets, prepare_sample, reorg_datasets_by_split
+from unimernet.datasets.repeat_aug_sampler import RepeatAugCollator, RepeatAugSampler
 
 # imports modules for registration
 from unimernet.datasets.builders import *  # noqa: F403
@@ -31,7 +31,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="DDP training entrypoint for UnimerNet (from scratch)"
     )
-    parser.add_argument("--cfg-path", required=True, help="path to configuration file.")
+    parser.add_argument("--cfg-path", default="/home/ubuntu/baiweikang/Projects/Taichi/UniMERNet-main/configs/train/unimernet_base_encoder6666_decoder8_dim1024.yaml", help="path to configuration file.")
     parser.add_argument(
         "--dist-url",
         default=None,
@@ -109,9 +109,8 @@ def build_optimizer(cfg, model):
     )
 
 
-def build_lr_scheduler(cfg, optimizer, iters_per_epoch):
+def build_lr_scheduler(cfg, optimizer, iters_per_epoch, max_epoch):
     lr_sched = cfg.run_cfg.lr_sched
-    max_epoch = cfg.run_cfg.get("max_epoch", 1)
     min_lr = cfg.run_cfg.min_lr
     init_lr = cfg.run_cfg.init_lr
     warmup_lr = cfg.run_cfg.get("warmup_lr", -1)
@@ -144,14 +143,29 @@ def build_lr_scheduler(cfg, optimizer, iters_per_epoch):
 
 
 def create_train_loader(cfg, train_dataset):
-    sampler = None
-    if cfg.run_cfg.distributed:
+    collate_fn = getattr(train_dataset, "collater", None)
+    aug_repeats = int(cfg.run_cfg.get("aug_repeats", 1))
+    keep_original = bool(cfg.run_cfg.get("keep_original", False))
+
+    if aug_repeats > 1:
+        sampler = RepeatAugSampler(
+            train_dataset,
+            num_replicas=get_world_size() if cfg.run_cfg.distributed else 1,
+            rank=get_rank() if cfg.run_cfg.distributed else 0,
+            shuffle=True,
+            num_repeats=aug_repeats,
+            keep_original=keep_original,
+        )
+        collate_fn = RepeatAugCollator(collate_fn, train_dataset, keep_original)
+    elif cfg.run_cfg.distributed:
         sampler = DistributedSampler(
             train_dataset,
             shuffle=True,
             num_replicas=get_world_size(),
             rank=get_rank(),
         )
+    else:
+        sampler = None
 
     return DataLoader(
         train_dataset,
@@ -160,7 +174,7 @@ def create_train_loader(cfg, train_dataset):
         pin_memory=True,
         sampler=sampler,
         shuffle=sampler is None,
-        collate_fn=getattr(train_dataset, "collater", None),
+        collate_fn=collate_fn,
         drop_last=True,
     )
 
@@ -178,7 +192,7 @@ def train_one_epoch(
 ):
     model.train()
     sampler = getattr(loader, "sampler", None)
-    if isinstance(sampler, DistributedSampler):
+    if isinstance(sampler, (DistributedSampler, RepeatAugSampler)):
         sampler.set_epoch(epoch)
 
     total_loss = 0.0
@@ -207,11 +221,12 @@ def train_one_epoch(
 
         if (step + 1) % log_freq == 0 and get_rank() == 0:
             logging.info(
-                "Epoch %d step %d/%d - loss: %.6f",
-                epoch,
+                "Epoch %d step %d/%d - loss: %.6f, lr: %.2e",
+                epoch + 1,
                 step + 1,
                 len(loader),
                 total_loss / (step + 1),
+                optimizer.param_groups[0]["lr"],
             )
 
     return total_loss / max(len(loader), 1)
@@ -248,6 +263,30 @@ def main():
 
     train_loader = create_train_loader(cfg, train_dataset)
     iters_per_epoch = len(train_loader)
+    max_epoch = int(cfg.run_cfg.get("max_epoch", 1))
+
+    # 打印训练配置信息
+    if get_rank() == 0:
+        aug_repeats = int(cfg.run_cfg.get("aug_repeats", 1))
+        keep_original = bool(cfg.run_cfg.get("keep_original", False))
+        world_size = get_world_size()
+        batch_size = cfg.run_cfg.batch_size_train
+        dataset_size = len(train_dataset)
+        effective_samples = dataset_size * aug_repeats
+        samples_per_iter = batch_size * world_size
+        total_iters = iters_per_epoch * max_epoch
+        
+        logging.info("=" * 60)
+        logging.info("Training Configuration:")
+        logging.info(f"  Dataset size: {dataset_size:,}")
+        logging.info(f"  aug_repeats: {aug_repeats}, keep_original: {keep_original}")
+        logging.info(f"  Effective samples per epoch: {effective_samples:,}")
+        logging.info(f"  batch_size_train: {batch_size}, world_size: {world_size}")
+        logging.info(f"  Samples per iteration: {samples_per_iter}")
+        logging.info(f"  Iterations per epoch: {iters_per_epoch:,}")
+        logging.info(f"  Max epochs: {max_epoch}")
+        logging.info(f"  Total iterations: {total_iters:,}")
+        logging.info("=" * 60)
 
     model = build_model(cfg)
     device = torch.device(cfg.run_cfg.device)
@@ -256,20 +295,12 @@ def main():
         model = DDP(model, device_ids=[cfg.run_cfg.gpu], find_unused_parameters=False)
 
     optimizer = build_optimizer(cfg, model)
-    lr_scheduler = build_lr_scheduler(cfg, optimizer, iters_per_epoch)
+    lr_scheduler = build_lr_scheduler(cfg, optimizer, iters_per_epoch, max_epoch)
     scaler = torch.cuda.amp.GradScaler() if cfg.run_cfg.get("amp", False) else None
 
     accum_grad_iters = int(cfg.run_cfg.get("accum_grad_iters", 1))
     log_freq = int(cfg.run_cfg.get("log_freq", 50))
 
-    max_iters = cfg.run_cfg.get("max_iters", None)
-    if max_iters is not None:
-        max_iters = int(max_iters)
-        max_epoch = max(1, ceil(max_iters / max(iters_per_epoch, 1)))
-    else:
-        max_epoch = int(cfg.run_cfg.get("max_epoch", 1))
-
-    total_iters = 0
     for epoch in range(max_epoch):
         avg_loss = train_one_epoch(
             model,
@@ -282,12 +313,8 @@ def main():
             accum_grad_iters,
             log_freq,
         )
-        total_iters += iters_per_epoch
         if get_rank() == 0:
-            logging.info("Epoch %d finished. Avg loss: %.6f", epoch, avg_loss)
-
-        if max_iters is not None and total_iters >= max_iters:
-            break
+            logging.info("Epoch %d/%d finished. Avg loss: %.6f", epoch + 1, max_epoch, avg_loss)
 
     if cfg.run_cfg.distributed:
         dist.barrier()

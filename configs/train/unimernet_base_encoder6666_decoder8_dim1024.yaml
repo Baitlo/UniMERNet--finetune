@@ -35,6 +35,9 @@ datasets:
 run:
   runner: runner_iter
   task: unimernet_train
+
+  aug_repeats: 5
+  keep_original: true
   
   # optimizer
   lr_sched: "linear_warmup_cosine_lr"
@@ -44,20 +47,15 @@ run:
   weight_decay: 0.05
   
   # batch size
-  batch_size_train: 4    # 每GPU的batch size
-  batch_size_eval: 8
-  accum_grad_iters: 1    # 梯度累积步数
+  batch_size_train: 5    # 每GPU的batch size
+  batch_size_eval: 16
+  accum_grad_iters: 4    # 梯度累积步数
   num_workers: 8
   
-  # training iterations (基于8卡计算)
-  # 数据集: 1,000,000 样本
-  # effective_batch = batch_size_train * world_size = 4 * 8 = 32
-  # 1 epoch = 1,000,000 / 32 = 31,250 iters
-  # 3 epochs = 93,750 iters
-  warmup_steps: 3125     # 约10%的1个epoch
-  iters_per_inner_epoch: 31250   # 每个epoch的iteration数
-  max_iters: 93750       # 3个epochs
-  milestone: [1, 2, 3]   # 在第1、2、3个epoch结束时额外保存checkpoint
+  # training epochs
+  # iters_per_epoch 会自动计算: dataset_size * aug_repeats / (batch_size_train * world_size)
+  max_epoch: 3
+  warmup_steps: 800     # warmup步数
 
   seed: 42
   
@@ -75,6 +73,8 @@ run:
   dist_url: "env://"
   distributed: True
   distributed_type: ddp
+
+
 
   generate_cfg:
     temperature: 0.0
